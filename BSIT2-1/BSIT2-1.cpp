@@ -93,7 +93,7 @@ void EnumerateGroupsAndUsers()
 		handleError("No such function LsaLookupNames2");
 
 	PLOCALGROUP_INFO_0 pGroupsBuf;
-	PLOCALGROUP_MEMBERS_INFO_2 pUsersBuf = nullptr;
+	LOCALGROUP_MEMBERS_INFO_2 pUsersBuf[8000];
 	DWORD groupsTotalentries = 0, usersTotalentries = 0;
 	DWORD groupsEntriesread = 0, usersEntriesread = 0;
 	DWORD_PTR groupsResumehandle = NULL, usersResumehandle = NULL;
@@ -114,29 +114,30 @@ void EnumerateGroupsAndUsers()
 		name[i] = (pGroupsBuf[i].lgrpi0_name);
 		rc = InitLsaString(&pLsaString[i], name[i]);
 	}
+	status = LsaLookupNames2(GetPolicyHandle(), 0x80000000, groupsEntriesread, pLsaString, &ReferencedDomains, &sid);
 	for (i = 0; i < groupsEntriesread; i++)
 	{
-		//name[i] = (pGroupsBuf[i].lgrpi0_name);
-		//rc = InitLsaString(&pLsaString[i], name[i]);
-			//wprintf(L"%s\n", name);
-		status = LsaLookupNames2(GetPolicyHandle(), 0x80000000, 1, &pLsaString[i], &ReferencedDomains, &sid);
-		rc = ConvertSidToStringSid(sid->Sid, &groupStringSid);
-		if (rc)
+		LPWSTR curname = name[i];
+		if (status == 0)
 		{
-			wprintf(L"%s %s\n", name[i], groupStringSid);
-			status = NetLocalGroupGetMembers(NULL, name[i], 2, (BYTE **)&pUsersBuf, MAX_PREFERRED_LENGTH, &usersEntriesread, &usersTotalentries, &usersResumehandle);
-			for (DWORD j = 0; j < usersEntriesread; j++)
+			rc = ConvertSidToStringSid(sid[i].Sid, &groupStringSid);
+			if (rc)
 			{
-				rc = ConvertSidToStringSid(pUsersBuf[j].lgrmi2_sid, &userStringSid);
-				if (rc)
+				wprintf(L"%s %s\n", curname, groupStringSid);
+				status = NetLocalGroupGetMembers(NULL, curname, 2, (LPBYTE *)&pUsersBuf, 4096, &usersEntriesread, &usersTotalentries, &usersResumehandle);
+				for (DWORD j = 0; j < usersEntriesread; j++)
 				{
-					wprintf(L"\t%s %s\n", pUsersBuf[j].lgrmi2_domainandname, userStringSid);
+					rc = ConvertSidToStringSid(pUsersBuf[j].lgrmi2_sid, &userStringSid);
+					if (rc)
+					{
+						wprintf(L"\t%s %s\n", pUsersBuf[j].lgrmi2_domainandname, userStringSid);
+					}
 				}
 			}
 		}
 		//LocalFree(groupStringSid);
 
-		NetApiBufferFree(pUsersBuf);
+		//NetApiBufferFree(pUsersBuf);
 	}
 
 	NetApiBufferFree(pGroupsBuf);
@@ -441,16 +442,6 @@ void AddAccountRights()
 	//LsaLookupNames2(GetPolicyHandle(), 0x80000000, 1, InitLsaString(name), &ReferencedDomains, &sid);
 	//if (LsaAddAccountRights(GetPolicyHandle(), sid, InitLsaString(privname), 1))
 	//	printf("LsaAddAccountRights error\n");
-}
-
-
-PLSA_UNICODE_STRING InitLsaString(LPWSTR wstr)
-{
-	PLSA_UNICODE_STRING lsastr = new LSA_UNICODE_STRING;
-	lsastr->Buffer = wstr;
-	lsastr->Length = lstrlenW(wstr) * sizeof(WCHAR);
-	lsastr->MaximumLength = lsastr->Length + sizeof(WCHAR);
-	return lsastr;
 }
 
 void handleError(const char *message)
