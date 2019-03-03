@@ -6,13 +6,14 @@
 #include <lsalookup.h>
 #include <LM.h>
 #include <Ntsecapi.h>
+#include <sddl.h>
 
 void handleError(const char *message);
 void EnumerateGroupsAndUsers();
 LSA_HANDLE GetPolicyHandle();
 
-typedef DWORD		(*NetLocalGroupEnumT)		(LPWSTR, DWORD, PBYTE*, DWORD, PDWORD, PDWORD, PDWORD);
-typedef DWORD		(*NetLocalGroupGetMembersT)	(LPCWSTR, LPCWSTR, DWORD, LPBYTE*, DWORD, LPDWORD, LPDWORD, PDWORD_PTR);
+typedef DWORD		(*NetLocalGroupEnumT)		(LPWSTR, DWORD, LPBYTE*, DWORD, LPDWORD, LPDWORD, PDWORD_PTR);
+typedef NTSTATUS	(*NetLocalGroupGetMembersT)	(LPCWSTR, LPCWSTR, DWORD, LPBYTE*, DWORD, LPDWORD, LPDWORD, PDWORD_PTR);
 typedef DWORD		(*NetApiBufferFreeT)		(PVOID);
 typedef BOOL		(*ConvertSidToStringSidWT)	(PSID,LPWSTR*);
 typedef NTSTATUS	(*LsaLookupNames2T)			(LSA_HANDLE, ULONG, ULONG, PLSA_UNICODE_STRING, PLSA_REFERENCED_DOMAIN_LIST*, PLSA_TRANSLATED_SID2*);
@@ -28,10 +29,15 @@ typedef DWORD		(*NetLocalGroupDelT)		(LPCWSTR, LPCWSTR);
 typedef DWORD		(*NetLocalGroupAddT)		(LPCWSTR, DWORD, LPBYTE, LPDWORD);
 typedef DWORD		(*NetLocalGroupAddMembersT)	(LPCWSTR, LPCWSTR, DWORD, LPBYTE, DWORD);
 
-PLSA_UNICODE_STRING InitLsaString(LPCWSTR pwszString)
+bool InitLsaString(
+	PLSA_UNICODE_STRING pLsaString,
+	LPCWSTR pwszString
+)
 {
-
 	DWORD dwLen = 0;
+
+	if (NULL == pLsaString)
+		return FALSE;
 
 	if (NULL != pwszString)
 	{
@@ -41,17 +47,16 @@ PLSA_UNICODE_STRING InitLsaString(LPCWSTR pwszString)
 	}
 
 	// Store the string.
-	//PLSA_UNICODE_STRING * pLsaString = new PLSA_UNICODE_STRING;
-	PLSA_UNICODE_STRING  pLsaString = new LSA_UNICODE_STRING;
 	pLsaString->Buffer = (WCHAR *)pwszString;
 	pLsaString->Length = (USHORT)dwLen * sizeof(WCHAR);
 	pLsaString->MaximumLength = (USHORT)(dwLen + 1) * sizeof(WCHAR);
 
-	return pLsaString;
+	return TRUE;
 }
 
 int main()
 {
+	setlocale(LC_ALL, "Russian");
 	printf( "Hello World!\n");
 	EnumerateGroupsAndUsers();
 	return 0;
@@ -87,30 +92,50 @@ void EnumerateGroupsAndUsers()
 	if (LsaLookupNames2 == NULL)
 		handleError("No such function LsaLookupNames2");
 
-	PLOCALGROUP_INFO_0 pGroupsBuf = NULL;
-	PLOCALGROUP_MEMBERS_INFO_2 pUsersBuf = NULL;
+	PLOCALGROUP_INFO_0 pGroupsBuf;
+	PLOCALGROUP_MEMBERS_INFO_2 pUsersBuf = nullptr;
 	DWORD groupsTotalentries = 0, usersTotalentries = 0;
 	DWORD groupsEntriesread = 0, usersEntriesread = 0;
 	DWORD_PTR groupsResumehandle = NULL, usersResumehandle = NULL;
 
 	NetLocalGroupEnum(NULL, 0, (LPBYTE *)&pGroupsBuf, MAX_PREFERRED_LENGTH, &groupsEntriesread, &groupsTotalentries, &groupsResumehandle);
 
-	for (DWORD i = 0; i < groupsEntriesread; i++)
+	PLSA_REFERENCED_DOMAIN_LIST ReferencedDomains;
+	PLSA_TRANSLATED_SID2  sid;
+	LSA_UNICODE_STRING pLsaString[100];
+	LPWSTR userStringSid;
+	LPWSTR groupStringSid;
+	LPWSTR name[100];
+	bool rc;
+	NTSTATUS status;
+	int i = 0;
+	for (i = 0; i < groupsEntriesread; i++)
 	{
-		PLSA_REFERENCED_DOMAIN_LIST ReferencedDomains;
-		PLSA_TRANSLATED_SID2  sid;
-		NTSTATUS status =  LsaLookupNames2(GetPolicyHandle(), 0x80000000, 1, InitLsaString(pGroupsBuf[i].lgrpi0_name), &ReferencedDomains, &sid);
-		LPWSTR groupStringSid;
-		ConvertSidToStringSidW(sid->Sid, &groupStringSid);
-		wprintf(L"%s %s\n", pGroupsBuf[i].lgrpi0_name, groupStringSid);
-		NetLocalGroupGetMembers(NULL, pGroupsBuf[i].lgrpi0_name, 2, (LPBYTE *)&pUsersBuf, MAX_PREFERRED_LENGTH, &usersEntriesread, &usersTotalentries, &usersResumehandle);
-		for (DWORD j = 0; j < usersEntriesread; j++)
+		name[i] = (pGroupsBuf[i].lgrpi0_name);
+		rc = InitLsaString(&pLsaString[i], name[i]);
+	}
+	for (i = 0; i < groupsEntriesread; i++)
+	{
+		//name[i] = (pGroupsBuf[i].lgrpi0_name);
+		//rc = InitLsaString(&pLsaString[i], name[i]);
+			//wprintf(L"%s\n", name);
+		status = LsaLookupNames2(GetPolicyHandle(), 0x80000000, 1, &pLsaString[i], &ReferencedDomains, &sid);
+		rc = ConvertSidToStringSid(sid->Sid, &groupStringSid);
+		if (rc)
 		{
-			LPWSTR userStringSid;
-			ConvertSidToStringSidW(pUsersBuf[j].lgrmi2_sid, &userStringSid);
-			wprintf(L"\t%s %s\n", pUsersBuf[j].lgrmi2_domainandname, userStringSid);
-			LocalFree(userStringSid);
+			wprintf(L"%s %s\n", name[i], groupStringSid);
+			status = NetLocalGroupGetMembers(NULL, name[i], 2, (BYTE **)&pUsersBuf, MAX_PREFERRED_LENGTH, &usersEntriesread, &usersTotalentries, &usersResumehandle);
+			for (DWORD j = 0; j < usersEntriesread; j++)
+			{
+				rc = ConvertSidToStringSid(pUsersBuf[j].lgrmi2_sid, &userStringSid);
+				if (rc)
+				{
+					wprintf(L"\t%s %s\n", pUsersBuf[j].lgrmi2_domainandname, userStringSid);
+				}
+			}
 		}
+		//LocalFree(groupStringSid);
+
 		NetApiBufferFree(pUsersBuf);
 	}
 
@@ -123,21 +148,21 @@ void EnumerateGroupsAndUsers()
 
 }
 
-void EnumerateAccountRights()
-{
-	WCHAR name[127];
-	printf("Name: ");	_getws_s(name); \
-	PLSA_REFERENCED_DOMAIN_LIST ReferencedDomains;
-	PLSA_TRANSLATED_SID2  sid;
-	LsaLookupNames2(GetPolicyHandle(), 0x80000000, 1, InitLsaString(name), &ReferencedDomains, &sid);
-	PLSA_UNICODE_STRING rights;
-	ULONG count;
-	LsaEnumerateAccountRights(GetPolicyHandle(), sid, &rights, &count);
-	for (ULONG k = 0; k < count; k++)
-	{
-		wprintf(L"%s\n", rights->Buffer);
-	}
-}
+//void EnumerateAccountRights()
+//{
+//	WCHAR name[127];
+//	printf("Name: ");	_getws_s(name); \
+//	PLSA_REFERENCED_DOMAIN_LIST ReferencedDomains;
+//	PLSA_TRANSLATED_SID2  sid;
+//	//LsaLookupNames2(GetPolicyHandle(), 0x80000000, 1, InitLsaString(name), &ReferencedDomains, &sid);
+//	PLSA_UNICODE_STRING rights;
+//	ULONG count;
+//	//LsaEnumerateAccountRights(GetPolicyHandle(), sid, &rights, &count);
+//	for (ULONG k = 0; k < count; k++)
+//	{
+//		wprintf(L"%s\n", rights->Buffer);
+//	}
+//}
 
 
 void EnumerateAccountRightsToken()
@@ -148,7 +173,7 @@ void EnumerateAccountRightsToken()
 	printf("User password: "); _getws_s(password);
 	PLSA_REFERENCED_DOMAIN_LIST ReferencedDomains;
 	PLSA_TRANSLATED_SID2  sid;
-	LsaLookupNames2(GetPolicyHandle(), 0x80000000, 1, InitLsaString(username), &ReferencedDomains, &sid);
+	//LsaLookupNames2(GetPolicyHandle(), 0x80000000, 1, InitLsaString(username), &ReferencedDomains, &sid);
 	HANDLE token;
 	TCHAR  privilegeName[256];
 	DWORD PrivilegeName;
@@ -390,9 +415,9 @@ void DeleteAccountRights()
 	printf("Access right: "); _getws_s(privname);
 	PLSA_REFERENCED_DOMAIN_LIST ReferencedDomains;
 	PLSA_TRANSLATED_SID2  sid;
-	LsaLookupNames2(GetPolicyHandle(), 0x80000000, 1, InitLsaString(name), &ReferencedDomains, &sid);
-	LsaRemoveAccountRights(GetPolicyHandle(), sid, 0, InitLsaString(privname), 1);
-	LsaAddAccountRights(GetPolicyHandle(), sid, InitLsaString(privname), 1);
+	//LsaLookupNames2(GetPolicyHandle(), 0x80000000, 1, InitLsaString(name), &ReferencedDomains, &sid);
+	//LsaRemoveAccountRights(GetPolicyHandle(), sid, 0, InitLsaString(privname), 1);
+	//LsaAddAccountRights(GetPolicyHandle(), sid, InitLsaString(privname), 1);
 }
 
 void AddAccountRights()
@@ -413,9 +438,9 @@ void AddAccountRights()
 	printf("Access right: "); _getws_s(privname);
 	PLSA_REFERENCED_DOMAIN_LIST ReferencedDomains;
 	PLSA_TRANSLATED_SID2  sid;
-	LsaLookupNames2(GetPolicyHandle(), 0x80000000, 1, InitLsaString(name), &ReferencedDomains, &sid);
-	if (LsaAddAccountRights(GetPolicyHandle(), sid, InitLsaString(privname), 1))
-		printf("LsaAddAccountRights error\n");
+	//LsaLookupNames2(GetPolicyHandle(), 0x80000000, 1, InitLsaString(name), &ReferencedDomains, &sid);
+	//if (LsaAddAccountRights(GetPolicyHandle(), sid, InitLsaString(privname), 1))
+	//	printf("LsaAddAccountRights error\n");
 }
 
 
